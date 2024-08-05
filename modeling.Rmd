@@ -1,0 +1,124 @@
+---
+title: "ISC project modeling"
+author: "Yanis Yang 1930026146"
+date: '2022-05-21'
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setenv(LANG = "en")
+```
+
+Here, what we want to study mainly is the relationship between price and other variables. As mentioned earlier, there are 10 variables in our data set. Next we will fit the univariate model and the multivariate model.
+
+## Univariate Model
+
+Because carat size greatly affects diamond price, here we choose to study the relationship between carat size change and diamond price change.
+
+To find the best model for univariate fit, here we use the jackknife algorithm to compare $price \thicksim carat$, $price \thicksim carat + carat^2$, $price \thicksim log(carat)$, $log(price) \thicksim log(carat)$ these 4 models.
+
+```{r echo=FALSE}
+dt1 <- read.csv("diamonds.csv")
+set.seed(7)
+dt2 <- dt1[sample(nrow(dt1), 1000), ]
+
+n = length(dt2$price)
+e1 <- e2 <- e3 <- e4 <- numeric(n)
+set.seed(12)
+for(k in 1:n){
+y <- dt2$price[-k]
+x1 <- dt2$carat[-k]
+x2 <- dt2$depth[-k]
+x3 <- dt2$table[-k]
+x4 <- dt2$x[-k]
+x5 <- dt2$y[-k]
+J1 <- lm(y ~ x1)
+yhat1 <-  J1$coef[1] + J1$coef[2] * dt2$carat[k]
+e1[k] <- dt2$price[k] - yhat1
+J2 <- lm(y ~ x1+I(x1^2))
+yhat2 <-  J2$coef[1] + J2$coef[2] * dt2$carat[k] + J2$coef[3] * dt2$carat[k]^2
+e2[k] <- dt2$price[k] - yhat2
+J3 <- lm(y ~ log(x1))
+yhat3 <-  J3$coef[1] + J3$coef[2] * log(dt2$carat[k])
+e3[k] <- dt2$price[k] - yhat3
+J4 <- lm(log(y) ~ log(x1))
+logyhat4 <-  J4$coef[1] + J4$coef[2] * log(dt2$carat[k])
+yhat4 <- exp(logyhat4)
+e4[k] <- dt2$price[k] - yhat4
+}
+c(mean(e1^2),mean(e2^2),mean(e3^2),mean(e4^2))
+```
+
+Here as we can find, $price \thicksim carat + carat^2$ may have a better fitting. Then we do the bootstrap to find the bias and stand error for $price \thicksim carat + carat^2$.
+
+```{r echo=FALSE}
+library(boot)
+set.seed(1234)
+bs<-function(formula,data,indices){
+d<-data[indices,]
+fit<-lm(formula,data=d)
+return(coef(fit))
+}
+results2 <- boot(data = dt1, statistic = bs, R = 1000, formula = price~carat+I(carat^2))
+print(results2)
+```
+
+And here is the fitting answer of $price \thicksim carat + carat^2$.
+
+```{r echo=FALSE}
+lm1 = lm(price ~ carat+I(carat^2),data=dt1)
+summary(lm1)
+plot(lm1)
+```
+## multivariate model
+
+In the next part we will look at the case of multivariate model fitting. As we showed earlier, variables can be divided into two categories. Numerical data: price, carat, depth, table, x, y, z. Categorical data: cut, color, clarity. The topic we want to study here is about the results of fitting numerical data.
+
+First we use backward regression to filter the available variables from $price \thicksim carat+depth+table+x+y+z$. Here we find that by backward regression, removing the $z$ variable can get better fitting results.
+
+```{r echo=FALSE}
+lm2<-lm(price~carat+depth+table+x+y+z,data=dt1)
+lm2.back<-step(lm2,direction="backward")
+summary(lm2.back)
+```
+
+At the same time, through the previous research, we know that price conforms to the log-normal distribution. So we next calculate jackknife for $\log(price)\thicksim carat+depth+table+x+y$ and $price\thicksim carat+depth+table+x+y$.
+
+```{r echo=FALSE}
+e5 <- e6 <- numeric(n)
+set.seed(12)
+for(k in 1:n){
+y <- dt2$price[-k]
+x1 <- dt2$carat[-k]
+x2 <- dt2$depth[-k]
+x3 <- dt2$table[-k]
+x4 <- dt2$x[-k]
+x5 <- dt2$y[-k]
+J5 <- lm(y ~ x1 + x2 + x3 + x4 + x5)
+yhat5 <-  J5$coef[1] + J5$coef[2] * dt2$carat[k] + J5$coef[3] * dt2$depth[k] + J5$coef[3] * dt2$table[k] + J5$coef[4] * dt2$x[k] + J5$coef[5] * dt2$y[k]
+e5[k] <- dt2$price[k] - yhat5
+J6 <- lm(log(y) ~ x1 + x2 + x3 + x4 + x5)
+logyhat6 <-  J6$coef[1] + J6$coef[2] * dt2$carat[k] + J6$coef[3] * dt2$depth[k] + J6$coef[3] * dt2$table[k] + J6$coef[4] * dt2$x[k] + J6$coef[5] * dt2$y[k]
+yhat6 <-exp(logyhat6)
+e6[k] <- dt2$price[k] - yhat6
+}
+c(mean(e5^2),mean(e6^2))
+```
+
+Here we can find that $\log(price)\thicksim carat+depth+table+x+y$ is the better model, then we do the bootstrap for this fitting model.
+
+```{r echo=FALSE}
+results1 <- boot(data = dt1, statistic = bs, R = 1000, formula = log(price)~carat+depth+table+x+y)
+print(results1)
+```
+
+And here is the fitting answer for $\log(price)\thicksim carat+depth+table+x+y$.
+
+```{r echo=FALSE}
+lm3<-lm(log(price)~carat+depth+table+x+y+z,data=dt1)
+summary(lm3)
+plot(lm3)
+```

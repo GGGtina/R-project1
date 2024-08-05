@@ -1,0 +1,910 @@
+---
+title: "Diamond analyse"
+author: 'Yanis Yang, Yiting GU, Wenzhao Zhang'
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    keep_tex: yes
+  html_document:
+    df_print: paged
+header-includes:
+- \usepackage{titling}
+- \setlength{\droptitle}{-6em} \usepackage{titlesec} \titlespacing{\title}{0pt}{\parskip}{-\parskip}
+---
+\begin{abstract}
+    
+    In this article, we try to understand the movement of diamond prices in the market and what factors influence it. Therefore, we collected and analyzed diamond prices under different parameters. After the kernel method analysis of price variables and the generation of Monte Carlo samples, the obtained prices conform to the log-normal distribution. And through the univariate model and multivariate model of R language, data analysis is carried out on the modeling data. We concluded that diamond table and depth have little effect on diamond price, while carat size has a large impact on diamond price.\\
+    
+    \textbf{keywords: Diamond, Kernel method, Monte Carlo samples, Linear regression analysis}
+    
+\end{abstract}
+
+\section{1.Introduction}
+  As a non-rigid commodity that gradually enters the public eye after the millennium, diamonds. Its price is affected by many factors, such as individual carat size, diamond color, cut level, and more.
+  \section{2.Objective}
+  The purpose of this paper is to analyze what distribution diamond prices fit and perform a linear regression analysis on the relationship between diamond prices and other variables.
+  \section{3.Data description}
+  Here our data comes from kaggle.\
+  \indent Following is the meanings of each variables.
+  \begin{table}
+   \begin{tabular}{l|l}
+    \hline
+    {Variables} & {Meaning of variable}\\
+    \hline
+    {price} & {price in US dollars (\$326--\$18,823)}\\
+    {carat} & {weight of the diamond (0.2--5.01)}\\
+    {cut} & {quality of the cut (Fair, Good, Very Good, Premium, Ideal)} \\
+    {color} & {diamond colour, from J (worst) to D (best)}\\
+    {clarity} & {a measurement of how clear the diamond is}\\
+    {x} & {length in mm (0--10.74)}\\
+    {y} & {width in mm (0--58.9)}\\
+    {z} & {depth in mm (0--31.8)}\\
+    {depth} & {total depth percentage z / mean(x, y) = 2 * z / (x + y) (43--79)}\\
+    {table} & {width of top of diamond relative to widest point (43--95)}\\
+    \hline
+   \end{tabular}
+  \end{table}
+
+```{r,include=FALSE,echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+options(digits = 4)
+
+library(MASS)
+library(stats4)
+library(fitdistrplus)
+```
+# 4.Method
+## 4.1 Kernel density estimation  
+kernel density estimation is used to estimate unknown density functions of dataset, which is one of non-parametric test methods. It is a fundamental data smoothing problem, a histogram density estimate problem, which derives the population distribution from a limited sample of data. The function is showed as follows.  
+$$
+\tilde{f_k}=\frac{1}{n}\sum \limits_{i=1}^{n}\frac{1}{h}K(\frac{x-X_i}{h}),\quad \\
+where\, K \,is\,a\,kernel\,function\,we\,choose\,;\,h\,is\,bandwidth
+$$
+To use this method, we also need to decide which kernel function we want to use. There are lots of kernel functions, here we choose “Gaussian” and “Epanechnikov” functions.For Gaussian kernel function, the common bandwidth is that $h=1.06\sigma n^{-\frac{1}{5}}$.And other better estimator of $h$ is that $h=0.9min(s,\frac{IQR}{1.34})n^{-\frac{1}{5}}$ If we use Epanechnikov kernel function, it calculates bandwidth with other computing rules.  
+Since we don’t know the distribution of diamonds data, we use kernel density estimation method to get an estimated distribution from sample data. And we can get the histograms like,  
+
+```{r,echo=FALSE}
+data<-read.csv("diamonds.csv")
+pri <- data$price
+n <- length(pri)
+h1 <- 1.06 * sd(pri) * n^(-1/5)
+h2 <- .9 * min(c(IQR(pri)/1.34,
+                 sd(pri))) * n^(-1/5)
+h0<-bw.nrd0(pri)
+par(mfrow=c(2,2))
+plot(density(pri),main="kernel=gaussian,common h estimate")
+plot(density(pri,bw=h1),main="kernel=gaussian,better h estimate")
+#plot(density(pri,bw=h2))#equal to h0=bw.nrd0(pri)
+plot(density(pri,kernel="epanechnikov"),main="kernel=epanechnikov")
+plot(density(pri,kernel="gaussian"),main="kernel=gaussian")
+```
+With the graph above, we can find that in our dataset, different kernel functions don’t affect the performance of histograms although it has histograms with different bandwidth. In the same time, we can find the distribution of data. With these histograms, we guess that it follows lognormal distribution, which $x\sim LN(u,\sigma^2)$.Then we use “fitdist” function to test several distributions that the data may follow. Finally, we find that the lognormal distribution is the best fit distribution. 
+```{r,echo=FALSE,warning=FALSE}
+library(fitdistrplus)
+par(mfrow=c(1,3))
+fitga<-fitdist(pri,"gamma",start = list(scale=1,shape=1),method = "mle")
+print(fitga)
+fitno<-fitdist(pri,"norm",method = "mle")
+print(fitno)
+fitln<-fitdist(pri,"lnorm",method = "mle")
+print(fitln)
+```
+At the same time, we do Kolmogorov-Smirnov test to test whether it follows lognormal distribution.Since p-value is smaller than 0.05, price of diamond follows lognormal distribution.  
+```{r,echo=FALSE,warning=FALSE}
+ks.test(log(pri),"pnorm")
+```
+## 4.2 MLE Method
+Then we use MLE method to estimate the parameters u,σ.
+We do it in two ways, one way is calculated by code, other is calculated by formulate.
+For code, I use constrOptim, optim, nlminb and nlm functions to estimate the parameters.  
+
+```{r,echo=FALSE,warning=FALSE}
+NormHood <- function(data, params){
+  like <- sum(log(dlnorm(data, params[1], params[2])))
+  return(-like)
+}
+#data0<- log(pri)
+data0<- pri
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+kable(result1)
+```
+
+And also I use formulate to calculate the parameters and compare the results of them. 
+we will find that the only the nlm method has different result compared by others.  This function carries out a minimization of the nonlinear function f using a Newton-type algorithm. So, it may not suitable of the function.
+
+$$
+E(log⁡(x))=u≈7.787; Var(log⁡(x))=σ≈1.015
+$$
+$$
+f(x,u,σ)=\left\{\begin{matrix} 
+  \frac {1}{x\sqrt{2\pi}\sigma}exp[-\frac{1}{2\sigma^{2}}(lnx-u)^{2}], \quad x>0\\  
+  0 , \quad x\leqslant 0
+\end{matrix}\right. 
+$$
+$$
+L=\prod \limits_{i=1}^{n}\frac {1}{x\sqrt{2\pi}\sigma} exp[-\frac{1}{2\sigma^{2}}(lnx_i-u)^{2}]\\
+=(2\pi\sigma^2)^{-\frac{n}{2}}(\prod \limits_{i = 1}^{n}\frac {1}{x_i\sqrt{2\pi}\sigma}) exp[-\frac{1}{2\sigma^{2}}\sum_{i=1}^{n}(lnx_i-u)^{2}]
+$$
+$$
+lnL=-\frac{n}{2}ln(2\pi\sigma^2)-ln(\prod \limits_{i = 1}^{n} x_i)-\frac{1}{2\sigma^2}\sum \limits_{i = 1}^{n}(lnx_i-u)^2
+$$
+$$
+\frac{\mathrm{d}}{\mathrm{d}u}\ln(L)=\frac{1}{\sigma^2}\sum \limits_{i=1}^{n}({ln{x_i}-u})=0\\
+\frac{\mathrm{d}}{\mathrm{d}\sigma^2}\ln(L)=-\frac{1}{2\sigma^2}+\frac{1}{2\sigma^4}\sum \limits_{i=1}^{n}({ln{x_i}-u})^2=0
+$$
+$$
+\hat{u}=\frac{1}{n}\sum \limits_{i=1}^{n}{ln{x_i}}; \quad \hat{\sigma^2}=\frac{1}{n}\sum  \limits_{i=1}^{n}(ln{x_i}-\frac{1}{n}\sum  \limits_{i=1}^{n}{ln{x_i}})^2
+$$
+We use code to calculate parameters and find that the results of ML method and formulate are the same.
+```{r,echo=FALSE,warning=FALSE}
+library(BB)
+x<-pri
+#func <- function(var_ne,me,x) {
+#     n <- length(x)
+#     f[1] <- var_ne*sum(log(x,exp(1))-me)
+#     f[2] <- (-n/2)*a+(1/2)*var_ne^2*sum((log(x,exp(1))-me)^2)
+#     f
+#}
+
+f1<- function(x) {
+     n <- length(x)
+     f<-numeric()
+     f["me"] <- (1/n)*sum(log(x,exp(1)))
+     f["sigma"]<- (1/n)*sum((log(x,exp(1))-(1/n)*sum(log(x,exp(1))))^2)
+     f["sigma"]<-sqrt(f["sigma"])
+     f
+}
+f1(pri)
+```
+
+# 5.Modelling
+Here, what we want to study mainly is the relationship between price and other variables. As mentioned earlier, there are 10 variables in our data set. Next we will fit the univariate model and the multivariate model.
+
+## 5.1 Univariate Model
+Because carat size greatly affects diamond price, here we choose to study the relationship between carat size change and diamond price change.
+To find the best model for univariate fit, here we use the jackknife algorithm to compare $price \thicksim carat$, $price \thicksim carat + carat^2$, $price \thicksim log(carat)$, $log(price) \thicksim log(carat)$ these 4 models.
+
+```{r echo=FALSE, warning=FALSE}
+dt1 <- read.csv("diamonds.csv")
+set.seed(7)
+dt2 <- dt1[sample(nrow(dt1), 1000), ]
+
+n = length(dt2$price)
+e1 <- e2 <- e3 <- e4 <- numeric(n)
+set.seed(12)
+for(k in 1:n){
+y <- dt2$price[-k]
+x1 <- dt2$carat[-k]
+x2 <- dt2$depth[-k]
+x3 <- dt2$table[-k]
+x4 <- dt2$x[-k]
+x5 <- dt2$y[-k]
+J1 <- lm(y ~ x1)
+yhat1 <-  J1$coef[1] + J1$coef[2] * dt2$carat[k]
+e1[k] <- dt2$price[k] - yhat1
+J2 <- lm(y ~ x1+I(x1^2))
+yhat2 <-  J2$coef[1] + J2$coef[2] * dt2$carat[k] + J2$coef[3] * dt2$carat[k]^2
+e2[k] <- dt2$price[k] - yhat2
+J3 <- lm(y ~ log(x1))
+yhat3 <-  J3$coef[1] + J3$coef[2] * log(dt2$carat[k])
+e3[k] <- dt2$price[k] - yhat3
+J4 <- lm(log(y) ~ log(x1))
+logyhat4 <-  J4$coef[1] + J4$coef[2] * log(dt2$carat[k])
+yhat4 <- exp(logyhat4)
+e4[k] <- dt2$price[k] - yhat4
+}
+c(mean(e1^2),mean(e2^2),mean(e3^2),mean(e4^2))
+```
+
+Here as we can find, $price \thicksim carat + carat^2$ may have a better fitting. Then we do the bootstrap to find the bias and standard error for $price \thicksim carat + carat^2$.
+
+```{r echo=FALSE, warning=FALSE}
+library(boot)
+set.seed(1234)
+bs<-function(formula,data,indices){
+d<-data[indices,]
+fit<-lm(formula,data=d)
+return(coef(fit))
+}
+results2 <- boot(data = dt1, statistic = bs, R = 1000, formula = price~carat+I(carat^2))
+print(results2)
+```
+
+And here is the fitting answer of $price \thicksim carat + carat^2$.
+
+```{r echo=FALSE, warning=FALSE}
+lm1 = lm(price ~ carat+I(carat^2),data=dt1)
+#summary(lm1)
+par(mfrow=c(2,2))
+plot(lm1)
+```
+
+## 5.2 Multivariate model
+
+In the next part we will look at the case of multivariate model fitting. As we showed earlier, variables can be divided into two categories. Numerical data: price, carat, depth, table, x, y, z. Categorical data: cut, color, clarity. The topic we want to study here is about the results of fitting numerical data.
+
+First we use backward regression to filter the available variables from $price \thicksim carat+depth+table+x+y+z$. Here we find that by backward regression, removing the $z$ variable can get better fitting results.
+
+```{r echo=FALSE, warning=FALSE}
+lm2<-lm(price~carat+depth+table+x+y+z,data=dt1)
+lm2.back<-step(lm2,direction="backward")
+summary(lm2.back)
+```
+
+At the same time, through the previous research, we know that price conforms to the log-normal distribution. So we next calculate jackknife for $\log(price)\thicksim carat+depth+table+x+y$ and $price\thicksim carat+depth+table+x+y$.
+
+```{r echo=FALSE, warning=FALSE}
+e5 <- e6 <- numeric(n)
+set.seed(12)
+for(k in 1:n){
+y <- dt2$price[-k]
+x1 <- dt2$carat[-k]
+x2 <- dt2$depth[-k]
+x3 <- dt2$table[-k]
+x4 <- dt2$x[-k]
+x5 <- dt2$y[-k]
+J5 <- lm(y ~ x1 + x2 + x3 + x4 + x5)
+yhat5 <-  J5$coef[1] + J5$coef[2] * dt2$carat[k] + J5$coef[3] * dt2$depth[k] + J5$coef[3] * dt2$table[k] + J5$coef[4] * dt2$x[k] + J5$coef[5] * dt2$y[k]
+e5[k] <- dt2$price[k] - yhat5
+J6 <- lm(log(y) ~ x1 + x2 + x3 + x4 + x5)
+logyhat6 <-  J6$coef[1] + J6$coef[2] * dt2$carat[k] + J6$coef[3] * dt2$depth[k] + J6$coef[3] * dt2$table[k] + J6$coef[4] * dt2$x[k] + J6$coef[5] * dt2$y[k]
+yhat6 <-exp(logyhat6)
+e6[k] <- dt2$price[k] - yhat6
+}
+c(mean(e5^2),mean(e6^2))
+```
+
+Here we can find that $\log(price)\thicksim carat+depth+table+x+y$ is the better model, then we do the bootstrap for this fitting model.
+
+```{r echo=FALSE, warning=FALSE}
+results1 <- boot(data = dt1, statistic = bs, R = 1000, formula = log(price)~carat+depth+table+x+y)
+print(results1)
+```
+
+And here is the fitting answer for $\log(price)\thicksim carat+depth+table+x+y$.
+
+```{r echo=FALSE, warning=FALSE}
+lm3<-lm(log(price)~carat+depth+table+x+y+z,data=dt1)
+#summary(lm3)
+par(mfrow=c(2,2))
+plot(lm3)
+```
+
+# 6.Simulation
+
+From the data analysis results, we can assume that Price is followed lognormal distribution. The density function of the lognormal distribution function$\ln X \sim N\left(\mu, \sigma^{2}\right)$
+$$
+f_{\lg -N}(x ; \mu, \sigma)=\frac{1}{x \sigma \sqrt{2 \pi}} e^{-\frac{(\ln x-\mu)^{2}}{2 \sigma^{2}}}
+$$
+In this distribution function, we use the μ=7.787 and σ=1.015 to get the plot.
+
+```{r echo=FALSE, warning=FALSE}
+pdf<-function(x,miu,sd){
+  m=x*sd*sqrt(2*pi)
+  a=(log(x)-miu)^2
+  b=2*sd^2
+  n=a/b
+  y=1/m*exp(-n)
+  return(y)
+}
+x<-data$price
+curve(pdf(x,miu=7.787,sd=1.015),from=0, to=53940)
+```
+
+## 6.1 Monte Carlo (MC) sample
+
+We use R code to generate Monte Carlo (MC) sample. Then, we do the MC estimate of confidence level. We have $\mu = 7.787, \sigma = 1.015$. we set replicates 1000 times$m=1000$ and $\alpha=0.05$. Use the really variance to judge it. The confidence interval is 0.934.
+
+```{r echo=FALSE, warning=FALSE}
+set.seed(100)
+a=log(rlnorm(53940, 7.787, sdlog = 1.015))
+mean(a)
+```
+
+```{r echo=FALSE, warning=FALSE}
+n <- 50; alpha <- .05
+UCL <- replicate(1000, expr = {
+x <- log(rlnorm(n, mean = 7.787, sd = 1.015))
+(n-1) * var(x) / qchisq(alpha, df = n-1) })
+c(sum(UCL > 1.042157), mean(UCL > 1.042157))
+```
+For the hypotheses, $H_0 : \mu = 7.787 vs H_1 : \mu \neq 7.787$, use Monte Carlo method to compute an empirical
+probability of type-I error, and compare it with the true value. Let the number of replicate as
+$m = 10000$.
+
+```{r echo=FALSE, warning=FALSE}
+m = 10000; n = 50; mu <- 7.787
+mu0 = 7.787
+p<- numeric(m)
+for (j in 1:m){
+x<- log(rlnorm(n,mean = 7.787,sd = 1.015))
+ttest <- t.test(x, alternative = "two.sided", mu = mu0)
+p[j] <- ttest$p.value
+}
+p.hat <- mean(p<alpha)
+se.hat <- sqrt(p.hat*(1 - p.hat)/m)
+cat(c(p.hat, se.hat))
+```
+## 6.2 Sample method and ML method
+
+### 6.2.1 Sample method
+
+We use sample method to estimate the mean and variance for the MC sample in the case that the sample size is 1000 and not put back. Firstly, we take the logarithm of these samples because this is a lognormal distribution. Then generate the mean and variance of these logarithms by using R code. The mean and variance are $\mu=7.741,\sigma^2=1.042$.
+```{r echo=FALSE, warning=FALSE}
+set.seed(100)
+s=sample(a,1000,replace = FALSE)
+mean(s)
+var(s)
+```
+### 6.2.2 ML method
+
+For the maximum likelihood method here we use the same method that was introduced earlier, but the sample we get is a MC sample. 
+```{r echo=FALSE, warning=FALSE}
+library(MASS)
+NormHood <- function(data, params){
+  like <- sum(log(dnorm(data, params[1], params[2])))
+  return(-like)
+}
+data0<- a
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+knitr::kable(result1)
+```
+From the result we can see that the best mean and variance are standard deviation:$\mu=7.785,\sigma=1.014$. The variance is$\sigma^2=1.056$.
+
+## 6.3 MSE
+
+We took samples of the original sample, with sample sizes of 50 (small sample) and 1000 (large sample).
+```{r echo=FALSE, warning=FALSE}
+set.seed(100)
+a1=log(sample(data$price,50,replace = FALSE))
+a2=log(sample(data$price,1000,replace = FALSE))
+```
+The mean and variance of these samples were obtained by sample method and ML Mehthod respectively
+```{r echo=FALSE, warning=FALSE}
+set.seed(100)
+mean(a1)
+var(a1)
+```
+```{r echo=FALSE, warning=FALSE}
+set.seed(100)
+mean(a2)
+var(a2)
+```
+```{r echo=FALSE, warning=FALSE}
+library(MASS)
+NormHood <- function(data, params){
+  like <- sum(log(dnorm(data, params[1], params[2])))
+  return(-like)
+}
+data0<- a1
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+knitr::kable(result1)
+```
+
+```{r echo=FALSE, warning=FALSE}
+data0<- a2
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+knitr::kable(result1)
+```
+We obtained the mean and variance of sample method and ML method when the sample size was 50 and 1000 respectively. We compare them by using mean square errors, and obtained the corresponding mean square error by formula 
+
+$$
+\text { MSE }=\sum_{i=1}^{n} \frac{1}{n}\left(\bar{\theta}-\theta_{i}\right)^{2}
+$$
+```{r echo=FALSE, warning=FALSE}
+err1<-numeric(50)
+for (i in 1:50){
+  err1[i]=(a1[i]-8.025455)^2
+}
+mse_ml_s50=mean(err1)
+mse_ml_s50
+```
+
+```{r echo=FALSE, warning=FALSE}
+err2<-numeric(1000)
+for (i in 1:1000){
+  err2[i]=(a2[i]-7.821741)^2
+}
+mse_ml_s1000=mean(err2)
+mse_ml_s1000
+```
+
+```{r echo=FALSE, warning=FALSE}
+err3<-numeric(50)
+for (i in 1:50){
+  err3[i]=(a1[i]-8.025364)^2
+}
+mse_sm_s50=mean(err3)
+mse_sm_s50
+```
+
+```{r echo=FALSE, warning=FALSE}
+err4<-numeric(1000)
+for (i in 1:1000){
+  err4[i]=(a2[i]-7.821853)^2
+}
+mse_sm_s1000=mean(err4)
+mse_sm_s1000
+```
+We can see that the sample bigger the MSE will smaller. And the ML method is better than Sample method.
+```{r echo=FALSE, warning=FALSE}
+li<-c(mse_sm_s50,mse_sm_s1000,mse_ml_s50,mse_ml_s1000)
+matrix(li,2,2,byrow= FALSE,dimnames = list(c("sample 50","sample 1000"),c("sample method","ML")))
+```
+
+# 7.Conclusion  
+We perform kernel method analysis and Monte Carlo sample generation on the price variable of diamonds. The resulting prices follow a log-normal distribution. It proves that the price of diamonds is generally distributed in the price range of 0 yuan to 5,000 yuan. There are not many high-end diamonds that are truly high-priced. The data were analyzed by univariate and multivariate analysis using R language. We conclude that the diamond table and depth have little effect on the diamond price, while the carat size has a large impact on the diamond price.  
+
+# Appendix
+```{r eval=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+options(digits = 4)
+
+library(MASS)
+library(stats4)
+library(fitdistrplus)
+```
+
+## 4.Method
+
+```{r eval=FALSE}
+#Kernel density estimation  
+data<-read.csv("diamonds.csv")
+pri <- data$price
+n <- length(pri)
+h1 <- 1.06 * sd(pri) * n^(-1/5)
+h2 <- .9 * min(c(IQR(pri)/1.34,
+                 sd(pri))) * n^(-1/5)
+h0<-bw.nrd0(pri)
+par(mfrow=c(2,2))
+plot(density(pri),main="kernel=gaussian,common h estimate")
+plot(density(pri,bw=h1),main="kernel=gaussian,better h estimate")
+#plot(density(pri,bw=h2))#equal to h0=bw.nrd0(pri)
+plot(density(pri,kernel="epanechnikov"),main="kernel=epanechnikov")
+plot(density(pri,kernel="gaussian"),main="kernel=gaussian")
+```
+
+```{r eval=FALSE}
+#test several distributions that the data may follow
+library(fitdistrplus)
+par(mfrow=c(1,3))
+fitga<-fitdist(pri,"gamma",start = list(scale=1,shape=1),method = "mle")
+print(fitga)
+fitno<-fitdist(pri,"norm",method = "mle")
+print(fitno)
+fitln<-fitdist(pri,"lnorm",method = "mle")
+print(fitln)
+```
+
+```{r eval=FALSE}
+#Kolmogorov-Smirnov test
+ks.test(log(pri),"pnorm")
+```
+
+```{r eval=FALSE}
+#Method
+NormHood <- function(data, params){
+  like <- sum(log(dlnorm(data, params[1], params[2])))
+  return(-like)
+}
+#data0<- log(pri)
+data0<- pri
+theta0<-c(1,2)
+#constrOptim, optim, nlminb and nlm functions to estimate the parameters
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+kable(result1)
+```
+
+```{r eval=FALSE}
+#use formulate to get parameters
+library(BB)
+x<-pri
+#func <- function(var_ne,me,x) {
+#     n <- length(x)
+#     f[1] <- var_ne*sum(log(x,exp(1))-me)
+#     f[2] <- (-n/2)*a+(1/2)*var_ne^2*sum((log(x,exp(1))-me)^2)
+#     f
+#}
+
+f1<- function(x) {
+     n <- length(x)
+     f<-numeric()
+     f["me"] <- (1/n)*sum(log(x,exp(1)))
+     f["sigma"]<- (1/n)*sum((log(x,exp(1))-(1/n)*sum(log(x,exp(1))))^2)
+     f["sigma"]<-sqrt(f["sigma"])
+     f
+}
+f1(pri)
+```
+
+## 5.Modeling
+
+```{r eval=FALSE}
+#reload the data
+dt1 <- read.csv("diamonds.csv")
+set.seed(7)
+dt2 <- dt1[sample(nrow(dt1), 1000), ]
+#use jackknife to compare four univariate model
+n = length(dt2$price)
+e1 <- e2 <- e3 <- e4 <- numeric(n)
+set.seed(12)
+for(k in 1:n){
+y <- dt2$price[-k]
+x1 <- dt2$carat[-k]
+x2 <- dt2$depth[-k]
+x3 <- dt2$table[-k]
+x4 <- dt2$x[-k]
+x5 <- dt2$y[-k]
+J1 <- lm(y ~ x1)
+yhat1 <-  J1$coef[1] + J1$coef[2] * dt2$carat[k]
+e1[k] <- dt2$price[k] - yhat1
+J2 <- lm(y ~ x1+I(x1^2))
+yhat2 <-  J2$coef[1] + J2$coef[2] * dt2$carat[k] + J2$coef[3] * dt2$carat[k]^2
+e2[k] <- dt2$price[k] - yhat2
+J3 <- lm(y ~ log(x1))
+yhat3 <-  J3$coef[1] + J3$coef[2] * log(dt2$carat[k])
+e3[k] <- dt2$price[k] - yhat3
+J4 <- lm(log(y) ~ log(x1))
+logyhat4 <-  J4$coef[1] + J4$coef[2] * log(dt2$carat[k])
+yhat4 <- exp(logyhat4)
+e4[k] <- dt2$price[k] - yhat4
+}
+c(mean(e1^2),mean(e2^2),mean(e3^2),mean(e4^2))
+```
+
+```{r eval=FALSE}
+# use bootstrap to find the bias and standard error
+library(boot)
+set.seed(1234)
+bs<-function(formula,data,indices){
+d<-data[indices,]
+fit<-lm(formula,data=d)
+return(coef(fit))
+}
+results2 <- boot(data = dt1, statistic = bs, R = 1000, formula = price~carat+I(carat^2))
+print(results2)
+```
+
+```{r eval=FALSE}
+# fit the best fitting univariate model
+lm1 = lm(price ~ carat+I(carat^2),data=dt1)
+#summary(lm1)
+par(mfrow=c(2,2))
+plot(lm1)
+```
+
+```{r eval=FALSE}
+# use backward regression to find useful variable
+lm2<-lm(price~carat+depth+table+x+y+z,data=dt1)
+lm2.back<-step(lm2,direction="backward")
+summary(lm2.back)
+```
+
+```{r eval=FALSE}
+# Use jackknife to compare two multivariate models
+e5 <- e6 <- numeric(n)
+set.seed(12)
+for(k in 1:n){
+y <- dt2$price[-k]
+x1 <- dt2$carat[-k]
+x2 <- dt2$depth[-k]
+x3 <- dt2$table[-k]
+x4 <- dt2$x[-k]
+x5 <- dt2$y[-k]
+J5 <- lm(y ~ x1 + x2 + x3 + x4 + x5)
+yhat5 <-  J5$coef[1] + J5$coef[2] * dt2$carat[k] + J5$coef[3] * dt2$depth[k] 
++ J5$coef[3] * dt2$table[k] + J5$coef[4] * dt2$x[k] + J5$coef[5] * dt2$y[k]
+e5[k] <- dt2$price[k] - yhat5
+J6 <- lm(log(y) ~ x1 + x2 + x3 + x4 + x5)
+logyhat6 <-  J6$coef[1] + J6$coef[2] * dt2$carat[k] + J6$coef[3] * dt2$depth[k] 
++ J6$coef[3] * dt2$table[k] + J6$coef[4] * dt2$x[k] + J6$coef[5] * dt2$y[k]
+yhat6 <-exp(logyhat6)
+e6[k] <- dt2$price[k] - yhat6
+}
+c(mean(e5^2),mean(e6^2))
+```
+
+```{r eval=FALSE}
+#use bootstrap to find the bias and standard error
+results1 <- boot(data = dt1, statistic = bs, R = 1000,
+                 formula = log(price)~carat+depth+table+x+y)
+print(results1)
+```
+
+```{r eval=FALSE}
+#fit the best fitting Multivariate model
+lm3<-lm(log(price)~carat+depth+table+x+y+z,data=dt1)
+#summary(lm3)
+par(mfrow=c(2,2))
+plot(lm3)
+```
+
+## 6.Simulation
+
+```{r eval=FALSE}
+#The pdf of lognormal distribution
+pdf<-function(x,miu,sd){
+  m=x*sd*sqrt(2*pi)
+  a=(log(x)-miu)^2
+  b=2*sd^2
+  n=a/b
+  y=1/m*exp(-n)
+  return(y)
+}
+x<-data$price
+curve(pdf(x,miu=7.787,sd=1.015),from=0, to=53940)#plot it
+```
+
+```{r eval=FALSE}
+set.seed(100)
+a=log(rlnorm(53940, 7.787, sdlog = 1.015))#generate MC sample
+mean(a)
+```
+
+```{r eval=FALSE}
+# Mc estimate of confidence level
+n <- 50; alpha <- .05
+UCL <- replicate(1000, expr = {
+x <- log(rlnorm(n, mean = 7.787, sd = 1.015))
+(n-1) * var(x) / qchisq(alpha, df = n-1) })
+c(sum(UCL > 1.042157), mean(UCL > 1.042157))
+```
+
+```{r eval=FALSE}
+#Type I error rate
+m = 10000; n = 50; mu <- 7.787
+mu0 = 7.787
+p<- numeric(m)
+for (j in 1:m){
+x<- log(rlnorm(n,mean = 7.787,sd = 1.015))
+ttest <- t.test(x, alternative = "two.sided", mu = mu0)
+p[j] <- ttest$p.value
+}
+p.hat <- mean(p<alpha)
+se.hat <- sqrt(p.hat*(1 - p.hat)/m)
+cat(c(p.hat, se.hat))
+```
+
+```{r eval=FALSE}
+#sample method
+set.seed(100)
+s=sample(a,1000,replace = FALSE) #take 1000 samples
+mean(s)
+var(s)
+```
+
+```{r eval=FALSE}
+#ML method
+library(MASS)
+NormHood <- function(data, params){
+  like <- sum(log(dnorm(data, params[1], params[2])))
+  return(-like)
+}
+data0<- a
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+knitr::kable(result1)
+```
+
+```{r eval=FALSE}
+#Take the sample from original sample
+set.seed(100)
+a1=log(sample(data$price,50,replace = FALSE))#take 50 sample(small sample)
+a2=log(sample(data$price,1000,replace = FALSE))#take 1000 sample(large sample)
+```
+
+```{r eval=FALSE}
+#sample method to get mean and variance from samll sample
+set.seed(100)
+mean(a1)
+var(a1)
+```
+
+```{r eval=FALSE}
+#sample method to get mean and variance from large sample
+set.seed(100)
+mean(a2)
+var(a2)
+```
+
+```{r eval=FALSE}
+#ML method to get mean and variance from samll sample
+library(MASS)
+NormHood <- function(data, params){
+  like <- sum(log(dnorm(data, params[1], params[2])))
+  return(-like)
+}
+data0<- a1
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+knitr::kable(result1)
+```
+
+```{r eval=FALSE}
+#ML method to get mean and variance from large sample
+data0<- a2
+theta0<-c(1,2)
+fit1 <- constrOptim(theta =theta0, data = data0, 
+                    f = NormHood, grad = NULL, 
+                    ui = diag(2), ci = c(0,1), 
+                    outer.iterations = 1000)
+
+fit2 <- nlminb(start = theta0, objective = NormHood, data = data0)
+fit3 <- optim(par = theta0, fn = NormHood, data = data0)
+fit4 <- nlm(NormHood, p = theta0, data = data0)
+
+result1 <- data.frame(constrOptim_result = fit1$par, 
+                      nlminb_result = fit2$par, 
+                      optim_result = fit3$par, 
+                      nlm_result = fit4$estimate, 
+                     row.names = c("μ", "σ"))
+knitr::kable(result1)
+```
+
+```{r eval=FALSE}
+#MSE in ML method(small sample) 
+err1<-numeric(50)
+for (i in 1:50){
+  err1[i]=(a1[i]-8.025455)^2
+}
+mse_ml_s50=mean(err1)
+mse_ml_s50
+```
+
+```{r eval=FALSE}
+#MSE in ML method(large sample)
+err2<-numeric(1000)
+for (i in 1:1000){
+  err2[i]=(a2[i]-7.821741)^2
+}
+mse_ml_s1000=mean(err2)
+mse_ml_s1000
+```
+
+```{r eval=FALSE}
+#MSE in sample method(small sample)
+err3<-numeric(50)
+for (i in 1:50){
+  err3[i]=(a1[i]-8.025364)^2
+}
+mse_sm_s50=mean(err3)
+mse_sm_s50
+```
+  
+```{r eval=FALSE}
+#MSE in sample method(large sample)
+err4<-numeric(1000)
+for (i in 1:1000){
+  err4[i]=(a2[i]-7.821853)^2
+}
+mse_sm_s1000=mean(err4)
+mse_sm_s1000
+```
+
+```{r eval=FALSE}
+#create table
+li<-c(mse_sm_s50,mse_sm_s1000,mse_ml_s50,mse_ml_s1000)
+matrix(li,2,2,byrow= FALSE,
+       dimnames = list(c("sample 50","sample 1000"),c("sample method","ML")))
+```
+
+\section{Contribution}
+     \indent Member: Yiting GU, Qirun YANG, Wenzhao ZHANG\
+     \indent Comtribution: \ \center
+     Yiting GU \qquad 1930026037 \qquad $33.3\%$ \center
+     Qirun YANG \qquad 1930026146 \qquad $33.3\%$ \center
+     Wenzhao ZHANG \qquad 1930026160 \qquad $33.3\%$ \center
+     
+\begin{thebibliography}{9} 
+    \bibitem{lamport94}  
+    \emph{R in action : data analysis and graphics with R / 2nd edition}. Kabacoff, \& Robert, Manning Publications, 2015.
+      
+    \bibitem{lamport94}  
+    \emph{Statistical computing with R}. Rizzo, M. L, Chapman and Hall/CRC, 2019.
+      
+    \bibitem{lamport94}  
+    \emph{Parameter estimation for the lognormal distribution}. Ginos, B. F., Brigham Young University, 2004.
+    
+    \bibitem{lamport94}  
+    \emph{Estimation of parameters of a lognormal distribution}. Shen, W. H, Taiwanese Journal of Mathematics, 2(2), 243-250, 1998.
+   \end{thebibliography}
+
